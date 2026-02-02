@@ -8,7 +8,8 @@ pub fn build(b: *Builder) void {
     const target = b.standardTargetOptions(.{});
 
     if (force_release and force_debug) {
-        @panic("build options conflict: -Drelease and -Ddebug are mutually exclusive");
+        std.log.err("build options conflict: -Drelease and -Ddebug are mutually exclusive", .{});
+        std.process.exit(1);
     }
 
     const optimize = if (force_release)

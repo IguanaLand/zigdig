@@ -5,12 +5,12 @@ const cli_helpers = @import("cli_helpers.zig");
 const logger = std.log.scoped(.zigdig_main);
 pub const std_options = std.Options{
     .log_level = .debug,
-    .logFn = logfn,
+    .logFn = log_fn,
 };
 
 pub var current_log_level: std.log.Level = .info;
 
-fn logfn(
+fn log_fn(
     comptime message_level: std.log.Level,
     comptime scope: @Type(.enum_literal),
     comptime format: []const u8,
@@ -21,7 +21,7 @@ fn logfn(
     }
 }
 
-fn formatAddressNoPort(address: std.net.Address, buffer: []u8) ![]const u8 {
+fn format_address_no_port(address: std.net.Address, buffer: []u8) ![]const u8 {
     var writer = std.Io.Writer.fixed(buffer);
     try address.format(&writer);
     const full = writer.buffered();
@@ -107,7 +107,7 @@ pub fn main() !void {
 
     for (addrs.addrs) |addr| {
         var addr_buffer: [128]u8 = undefined;
-        const addr_str = try formatAddressNoPort(addr, &addr_buffer);
+        const addr_str = try format_address_no_port(addr, &addr_buffer);
         try stdout.print("{s} has address {s}\n", .{ name_string, addr_str });
     }
 }

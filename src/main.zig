@@ -7,12 +7,12 @@ const logger = std.log.scoped(.zigdig_main);
 
 pub const std_options = std.Options{
     .log_level = .debug,
-    .logFn = logfn,
+    .logFn = log_fn,
 };
 
 pub var current_log_level: std.log.Level = .info;
 
-fn logfn(
+fn log_fn(
     comptime message_level: std.log.Level,
     comptime scope: @Type(.enum_literal),
     comptime format: []const u8,
@@ -23,7 +23,7 @@ fn logfn(
     }
 }
 
-fn formatAddress(address: std.net.Address, buffer: []u8) ![]const u8 {
+fn format_address(address: std.net.Address, buffer: []u8) ![]const u8 {
     var writer = std.Io.Writer.fixed(buffer);
     try address.format(&writer);
     return writer.buffered();
@@ -141,7 +141,7 @@ pub fn main() !void {
     defer conn.close();
 
     var addr_buffer: [128]u8 = undefined;
-    const addr_str = try formatAddress(conn.address, &addr_buffer);
+    const addr_str = try format_address(conn.address, &addr_buffer);
     logger.info("selected nameserver: {s}\n", .{addr_str});
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_file_writer = std.fs.File.stdout().writer(stdout_buffer[0..]);
@@ -169,8 +169,14 @@ pub fn main() !void {
     const reply_packet = reply.packet;
     logger.debug("reply: {any}", .{reply_packet});
 
-    try std.testing.expectEqual(packet.header.id, reply_packet.header.id);
-    try std.testing.expect(reply_packet.header.is_response);
+    if (packet.header.id != reply_packet.header.id) {
+        logger.warn("reply id mismatch: sent={d} received={d}", .{ packet.header.id, reply_packet.header.id });
+        return error.MismatchedTransactionId;
+    }
+    if (!reply_packet.header.is_response) {
+        logger.warn("expected response packet but received a query", .{});
+        return error.ExpectedResponse;
+    }
 
     try dns.helpers.printAsZoneFile(reply_packet, &name_pool, stdout);
 }

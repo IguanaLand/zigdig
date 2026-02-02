@@ -134,7 +134,7 @@ pub fn WrapperReader(comptime ReaderType: anytype) type {
         const Self = @This();
 
         pub fn read(self: *Self, buffer: []u8) !usize {
-            const bytes_read = try self.underlying_reader.read(buffer);
+            const bytes_read = try read_adapter(&self.underlying_reader, buffer);
             self.ctx.current_byte_count += bytes_read;
             logger.debug(
                 "wrapper reader: read {d} bytes, now at {d}",
@@ -185,6 +185,18 @@ pub fn WrapperReader(comptime ReaderType: anytype) type {
             return .{ .context = self };
         }
     };
+}
+
+fn read_adapter(underlying_reader: anytype, buffer: []u8) !usize {
+    const ReaderType = @TypeOf(underlying_reader.*);
+    if (@hasDecl(ReaderType, "read")) {
+        return try underlying_reader.read(buffer);
+    }
+    if (@hasDecl(ReaderType, "readVec")) {
+        var bufs = [_][]u8{buffer};
+        return try underlying_reader.readVec(&bufs);
+    }
+    @compileError("ReaderType must provide read or readVec");
 }
 
 /// Low level parser for DNS packets.

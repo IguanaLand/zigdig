@@ -27,7 +27,7 @@ pub const SRVData = struct {
     target: ?dns.Name,
 };
 
-fn maybeReadResourceName(
+fn maybe_read_resource_name(
     reader: anytype,
     options: ResourceData.ParseOptions,
 ) !?dns.Name {
@@ -86,7 +86,7 @@ pub const ResourceData = union(Type) {
 
     const Self = @This();
 
-    fn formatAddressNoPort(addr: std.net.Address, writer: anytype) !void {
+    fn format_address_no_port(addr: std.net.Address, writer: anytype) !void {
         var buffer: [128]u8 = undefined;
         var addr_writer = std.Io.Writer.fixed(&buffer);
         try addr.format(&addr_writer);
@@ -108,21 +108,34 @@ pub const ResourceData = union(Type) {
         try writer.writeAll(full);
     }
 
-    pub fn networkSize(self: Self) usize {
+    /// Return the byte size of the network representation.
+    pub fn networkSize(self: Self) !usize {
         return switch (self) {
             .A => 4,
             .AAAA => 16,
-            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| name.size(),
-            .TXT => |text| blk: {
-                var len: usize = 0;
-                len += @sizeOf(u16) * text.len;
-                for (text) |string| {
-                    len += string.len;
-                }
-                break :blk len;
+            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |maybe_name| blk: {
+                const name = maybe_name orelse return error.MissingData;
+                break :blk name.networkSize();
+            },
+            .SOA => |soa| blk: {
+                const mname = soa.mname orelse return error.MissingData;
+                const rname = soa.rname orelse return error.MissingData;
+                break :blk mname.networkSize() + rname.networkSize() + (5 * @sizeOf(u32));
+            },
+            .MX => |mx| blk: {
+                const exchange = mx.exchange orelse return error.MissingData;
+                break :blk @sizeOf(u16) + exchange.networkSize();
+            },
+            .SRV => |srv| blk: {
+                const target = srv.target orelse return error.MissingData;
+                break :blk (3 * @sizeOf(u16)) + target.networkSize();
+            },
+            .TXT => |maybe_text| blk: {
+                const text = maybe_text orelse return error.MissingData;
+                break :blk @sizeOf(u8) + text.len;
             },
 
-            else => @panic("TODO"),
+            else => return error.UnsupportedResourceType,
         };
     }
 
@@ -132,7 +145,7 @@ pub const ResourceData = union(Type) {
     /// formatted to its representing IPv4 address.
     pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
-            .A, .AAAA => |addr| return formatAddressNoPort(addr, writer),
+            .A, .AAAA => |addr| return format_address_no_port(addr, writer),
 
             .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| return writer.print("{?f}", .{name}),
 
@@ -159,6 +172,7 @@ pub const ResourceData = union(Type) {
         }
     }
 
+    /// Write the network representation of this resource data.
     pub fn writeTo(self: Self, writer: anytype) !usize {
         return switch (self) {
             .A => |addr| blk: {
@@ -167,11 +181,16 @@ pub const ResourceData = union(Type) {
             },
             .AAAA => |addr| try writer.write(&addr.in6.sa.addr),
 
-            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| try name.?.writeTo(writer),
+            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |maybe_name| blk: {
+                const name = maybe_name orelse return error.MissingData;
+                break :blk try name.writeTo(writer);
+            },
 
             .SOA => |soa_data| blk: {
-                const mname_size = try soa_data.mname.?.writeTo(writer);
-                const rname_size = try soa_data.rname.?.writeTo(writer);
+                const mname = soa_data.mname orelse return error.MissingData;
+                const rname = soa_data.rname orelse return error.MissingData;
+                const mname_size = try mname.writeTo(writer);
+                const rname_size = try rname.writeTo(writer);
 
                 try writer.writeInt(u32, soa_data.serial, .big);
                 try writer.writeInt(u32, soa_data.refresh, .big);
@@ -183,23 +202,31 @@ pub const ResourceData = union(Type) {
             },
 
             .MX => |mxdata| blk: {
+                const exchange = mxdata.exchange orelse return error.MissingData;
                 try writer.writeInt(u16, mxdata.preference, .big);
-                const exchange_size = try mxdata.exchange.?.writeTo(writer);
+                const exchange_size = try exchange.writeTo(writer);
                 break :blk @sizeOf(@TypeOf(mxdata.preference)) + exchange_size;
             },
 
             .SRV => |srv| {
+                const target = srv.target orelse return error.MissingData;
                 try writer.writeInt(u16, srv.priority, .big);
                 try writer.writeInt(u16, srv.weight, .big);
                 try writer.writeInt(u16, srv.port, .big);
 
-                const target_size = try srv.target.?.writeTo(writer);
+                const target_size = try target.writeTo(writer);
                 return target_size + (3 * @sizeOf(u16));
             },
 
-            // TODO TXT
+            .TXT => |maybe_text| blk: {
+                const text = maybe_text orelse return error.MissingData;
+                if (text.len > std.math.maxInt(u8)) return error.Overflow;
+                try writer.writeByte(@as(u8, @intCast(text.len)));
+                const written = try writer.write(text);
+                break :blk 1 + written;
+            },
 
-            else => @panic("not implemented"),
+            else => return error.UnsupportedResourceType,
         };
     }
 
@@ -241,9 +268,7 @@ pub const ResourceData = union(Type) {
         opaque_resource_data: Opaque,
         options: ParseOptions,
     ) !ResourceData {
-        const BufferT = std.io.FixedBufferStream([]const u8);
-        var stream = BufferT{ .buffer = opaque_resource_data.data, .pos = 0 };
-        const underlying_reader = stream.reader();
+        const underlying_reader = std.Io.Reader.fixed(opaque_resource_data.data);
 
         // important to keep track of that rdata's position in the packet
         // as rdata could point to other rdata.
@@ -251,7 +276,7 @@ pub const ResourceData = union(Type) {
             .current_byte_count = opaque_resource_data.current_byte_count,
         };
 
-        const WrapperR = dns.parserlib.WrapperReader(BufferT.Reader);
+        const WrapperR = dns.parserlib.WrapperReader(std.Io.Reader);
         var wrapper_reader = WrapperR{
             .underlying_reader = underlying_reader,
             .ctx = &parser_ctx,
@@ -274,24 +299,24 @@ pub const ResourceData = union(Type) {
                 };
             },
 
-            .NS => ResourceData{ .NS = try maybeReadResourceName(reader, options) },
-            .CNAME => ResourceData{ .CNAME = try maybeReadResourceName(reader, options) },
-            .PTR => ResourceData{ .PTR = try maybeReadResourceName(reader, options) },
-            .MD => ResourceData{ .MD = try maybeReadResourceName(reader, options) },
-            .MF => ResourceData{ .MF = try maybeReadResourceName(reader, options) },
+            .NS => ResourceData{ .NS = try maybe_read_resource_name(reader, options) },
+            .CNAME => ResourceData{ .CNAME = try maybe_read_resource_name(reader, options) },
+            .PTR => ResourceData{ .PTR = try maybe_read_resource_name(reader, options) },
+            .MD => ResourceData{ .MD = try maybe_read_resource_name(reader, options) },
+            .MF => ResourceData{ .MF = try maybe_read_resource_name(reader, options) },
 
             .MX => blk: {
                 break :blk ResourceData{
                     .MX = MXData{
                         .preference = try reader.readInt(u16, .big),
-                        .exchange = try maybeReadResourceName(reader, options),
+                        .exchange = try maybe_read_resource_name(reader, options),
                     },
                 };
             },
 
             .SOA => blk: {
-                const mname = try maybeReadResourceName(reader, options);
-                const rname = try maybeReadResourceName(reader, options);
+                const mname = try maybe_read_resource_name(reader, options);
+                const rname = try maybe_read_resource_name(reader, options);
                 const serial = try reader.readInt(u32, .big);
                 const refresh = try reader.readInt(u32, .big);
                 const retry = try reader.readInt(u32, .big);
@@ -314,7 +339,7 @@ pub const ResourceData = union(Type) {
                 const priority = try reader.readInt(u16, .big);
                 const weight = try reader.readInt(u16, .big);
                 const port = try reader.readInt(u16, .big);
-                const target = try maybeReadResourceName(reader, options);
+                const target = try maybe_read_resource_name(reader, options);
                 break :blk ResourceData{
                     .SRV = .{
                         .priority = priority,

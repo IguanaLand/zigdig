@@ -124,12 +124,8 @@ pub const DNSConnection = struct {
         // Stream won't use sendto() when its UDP, so serialize it into
         // a buffer, and then send that
         var buffer: [1024]u8 = undefined;
-
-        const typ = std.io.FixedBufferStream([]u8);
-        var stream = typ{ .buffer = &buffer, .pos = 0 };
-
-        const written_bytes = try packet.writeTo(stream.writer());
-
+        var writer = std.Io.Writer.fixed(&buffer);
+        const written_bytes = try packet.writeTo(&writer);
         const result = buffer[0..written_bytes];
         const dest_len: u32 = switch (self.address.any.family) {
             std.posix.AF.INET => @sizeOf(std.posix.sockaddr.in),
@@ -164,11 +160,8 @@ pub const DNSConnection = struct {
         const packet_bytes = packet_buffer[0..read_bytes];
         logger.debug("read {d} bytes", .{read_bytes});
 
-        var stream = std.io.FixedBufferStream([]const u8){
-            .buffer = packet_bytes,
-            .pos = 0,
-        };
-        return parseFullPacket(stream.reader(), packet_allocator, options);
+        const reader = std.Io.Reader.fixed(packet_bytes);
+        return parseFullPacket(reader, packet_allocator, options);
     }
 };
 
@@ -408,14 +401,9 @@ pub fn receiveTrustedAddresses(
     const packet_bytes = packet_buffer[0..read_bytes];
     logger.debug("read {d} bytes", .{read_bytes});
 
-    var stream = std.io.FixedBufferStream([]const u8){
-        .buffer = packet_bytes,
-        .pos = 0,
-    };
-
+    const reader = std.Io.Reader.fixed(packet_bytes);
     var ctx = dns.ParserContext{};
-
-    var parser = dns.parser(stream.reader(), &ctx, .{});
+    var parser = dns.parser(reader, &ctx, .{});
 
     var addrs = std.ArrayList(std.net.Address).empty;
     errdefer addrs.deinit(allocator);
@@ -462,21 +450,21 @@ pub fn receiveTrustedAddresses(
 
             .answer_rdata => |rdata| {
                 // TODO parser.reader()?
-                var reader = parser.wrapper_reader.reader();
+                var rdata_reader = parser.wrapper_reader.reader();
                 defer current_resource = null;
                 const maybe_addr = switch (current_resource.?.typ) {
                     .A => blk: {
                         var ip4addr: [4]u8 = undefined;
-                        _ = try reader.read(&ip4addr);
+                        _ = try rdata_reader.read(&ip4addr);
                         break :blk std.net.Address.initIp4(ip4addr, 0);
                     },
                     .AAAA => blk: {
                         var ip6_addr: [16]u8 = undefined;
-                        _ = try reader.read(&ip6_addr);
+                        _ = try rdata_reader.read(&ip6_addr);
                         break :blk std.net.Address.initIp6(ip6_addr, 0, 0, 0);
                     },
                     else => blk: {
-                        try reader.skipBytes(rdata.size, .{});
+                        try rdata_reader.skipBytes(rdata.size, .{});
                         break :blk null;
                     },
                 };
@@ -559,7 +547,7 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), allocator: std.mem.Alloca
     while (reader.takeDelimiter('\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
             // Skip to the delimiter in the reader, to fix parsing.
-            var line_writer = std.io.Writer.fixed(line_buf[0..]);
+            var line_writer = std.Io.Writer.fixed(line_buf[0..]);
             _ = reader.streamDelimiterLimit(&line_writer, '\n', .limited(line_buf.len)) catch |err2| switch (err2) {
                 error.StreamTooLong => {},
                 else => |e| return e,
@@ -569,7 +557,7 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), allocator: std.mem.Alloca
                 else => return e,
             };
             // Use the truncated line. A truncated comment or hostname will be handled correctly.
-            break :blk line_buf[0..line_writer.end];
+            break :blk line_writer.buffered();
         },
         else => |e| return e,
     }) |line| {
@@ -711,7 +699,7 @@ pub fn getAddressListWithOptions(
             }
         } else if (builtin.os.tag == .linux) {
             try lookupHosts(&final_list, allocator, std.posix.AF.INET, port, incoming_name);
-            try lookupHosts(&final_list, allocator, std.posix.AF.INET, port, incoming_name);
+            try lookupHosts(&final_list, allocator, std.posix.AF.INET6, port, incoming_name);
 
             if (final_list.items.len == 0) {
                 // if that didn't work, go to dns server
