@@ -2,9 +2,6 @@
 
 A small, naive DNS client library in Zig.
 
-Help me decide if this API is good:
-https://github.com/lun-4/zigdig/issues/10
-
 ## What it does
 
 - Serialize and deserialize DNS packets (RFC 1035).
