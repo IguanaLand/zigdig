@@ -43,10 +43,22 @@ And then:
 zigdig google.com a
 ```
 
+With a custom resolver:
+
+```bash
+zigdig --dns 1.1.1.1 google.com a
+```
+
 Or, for the `host(1)` equivalent:
 
 ```bash
 zigdig-tiny google.com
+```
+
+With a custom resolver:
+
+```bash
+zigdig-tiny --dns 1.1.1.1 google.com
 ```
 
 ## Using the library
@@ -64,7 +76,39 @@ pub fn main() !void {
     }
     var allocator = gpa.allocator();
 
-    var addresses = try dns.helpers.getAddressList("ziglang.org", allocator);
+    var addresses = try dns.helpers.getAddressList("ziglang.org", 80, allocator);
+    defer addresses.deinit();
+
+    for (addresses.addrs) |address| {
+        std.debug.print("we live in a society {}\n", .{address});
+    }
+}
+```
+
+With custom resolvers:
+
+```zig
+const std = @import("std");
+const dns = @import("dns");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        _ = gpa.deinit();
+    }
+    var allocator = gpa.allocator();
+
+    const resolvers = [_]dns.helpers.ResolverEndpoint{
+        .{ .address = "1.1.1.1" },
+        .{ .address = "8.8.8.8" },
+    };
+
+    var addresses = try dns.helpers.getAddressListWithOptions(
+        "ziglang.org",
+        80,
+        allocator,
+        .{ .resolvers = &resolvers },
+    );
     defer addresses.deinit();
 
     for (addresses.addrs) |address| {

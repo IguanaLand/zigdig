@@ -1,5 +1,6 @@
 const std = @import("std");
 const dns = @import("lib.zig");
+const cli_helpers = @import("cli_helpers.zig");
 
 const logger = std.log.scoped(.zigdig_main);
 pub const std_options = std.Options{
@@ -57,12 +58,46 @@ pub fn main() !void {
     defer args_it.deinit();
     _ = args_it.skip();
 
-    const name_string = (args_it.next() orelse {
+    var resolvers = std.ArrayList(dns.helpers.ResolverEndpoint).empty;
+    defer resolvers.deinit(allocator);
+
+    var name_arg: ?[]const u8 = null;
+
+    while (args_it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--dns") or std.mem.eql(u8, arg, "-s")) {
+            const resolver_arg = args_it.next() orelse {
+                logger.warn("missing resolver after {s}", .{arg});
+                return error.InvalidArgs;
+            };
+            const endpoint = cli_helpers.parseResolverEndpoint(resolver_arg) catch {
+                logger.warn("invalid resolver: {s}", .{resolver_arg});
+                return error.InvalidArgs;
+            };
+            try resolvers.append(allocator, endpoint);
+            continue;
+        }
+
+        if (name_arg == null) {
+            name_arg = arg;
+            continue;
+        }
+
+        logger.warn("too many arguments", .{});
+        return error.InvalidArgs;
+    }
+
+    const name_string = name_arg orelse {
         logger.warn("no name provided", .{});
         return error.InvalidArgs;
-    });
+    };
 
-    var addrs = try dns.helpers.getAddressList(name_string, 80, allocator);
+    const resolver_override = if (resolvers.items.len > 0) resolvers.items else null;
+    var addrs = try dns.helpers.getAddressListWithOptions(
+        name_string,
+        80,
+        allocator,
+        .{ .resolvers = resolver_override },
+    );
     defer addrs.deinit();
 
     var stdout_buffer: [1024]u8 = undefined;

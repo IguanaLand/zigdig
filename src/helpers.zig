@@ -172,6 +172,17 @@ pub const DNSConnection = struct {
     }
 };
 
+pub const ResolverEndpoint = struct {
+    address: []const u8,
+    port: ?u16 = null,
+};
+
+pub const AddressListOptions = struct {
+    /// When provided, skip /etc/resolv.conf and use these resolvers for DNS queries.
+    /// If empty, an error is returned.
+    resolvers: ?[]const ResolverEndpoint = null,
+};
+
 pub const ParseFullPacketOptions = struct {
     /// Use this NamePool to let deserialization of names outlive the call
     /// to parseFullPacket.
@@ -247,6 +258,20 @@ pub fn parseFullPacket(
 }
 
 const logger = std.log.scoped(.dns_helpers);
+
+fn selectResolver(resolvers: []const ResolverEndpoint) !ResolverEndpoint {
+    if (resolvers.len == 0) return error.NoNameserver;
+    return resolvers[0];
+}
+
+fn connectToResolverOverride(resolvers: ?[]const ResolverEndpoint) !DNSConnection {
+    if (resolvers) |list| {
+        const selected = try selectResolver(list);
+        return connectToResolver(selected.address, selected.port);
+    }
+
+    return connectToSystemResolver();
+}
 
 /// Open a socket to the DNS resolver specified in input parameter
 pub fn connectToResolver(address: []const u8, port: ?u16) !DNSConnection {
@@ -469,6 +494,7 @@ fn fetchTrustedAddresses(
     allocator: std.mem.Allocator,
     name: dns.Name,
     qtype: dns.ResourceType,
+    resolvers: ?[]const ResolverEndpoint,
 ) ![]std.net.Address {
     var questions = [_]dns.Question{
         .{
@@ -492,12 +518,27 @@ fn fetchTrustedAddresses(
     };
 
     //@compileLog("from fetchtrustedaddresses");
-    const conn = try dns.helpers.connectToSystemResolver();
+    const conn = try connectToResolverOverride(resolvers);
     defer conn.close();
 
     logger.debug("selected nameserver: {any}", .{conn.address});
     try conn.sendPacket(packet);
     return try receiveTrustedAddresses(allocator, &conn, .{});
+}
+
+fn resolveViaDns(
+    final_list: *std.ArrayList(std.net.Address),
+    allocator: std.mem.Allocator,
+    name: dns.Name,
+    resolvers: ?[]const ResolverEndpoint,
+) !void {
+    const addrs_v4 = try fetchTrustedAddresses(allocator, name, .A, resolvers);
+    defer allocator.free(addrs_v4);
+    for (addrs_v4) |addr| try final_list.append(allocator, addr);
+
+    const addrs_v6 = try fetchTrustedAddresses(allocator, name, .AAAA, resolvers);
+    defer allocator.free(addrs_v6);
+    for (addrs_v6) |addr| try final_list.append(allocator, addr);
 }
 
 // implementation taken from std.net address resolution
@@ -568,6 +609,15 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), allocator: std.mem.Alloca
 ///
 /// This function does not implement the "happy eyeballs" algorithm.
 pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.Allocator) !AddressList {
+    return getAddressListWithOptions(incoming_name, port, allocator, .{});
+}
+
+pub fn getAddressListWithOptions(
+    incoming_name: []const u8,
+    port: u16,
+    allocator: std.mem.Allocator,
+    options: AddressListOptions,
+) !AddressList {
     var name_buffer: [128][]const u8 = undefined;
     const name = try dns.Name.fromString(incoming_name, &name_buffer);
 
@@ -590,7 +640,9 @@ pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.A
         try final_list.append(allocator, std.net.Address.parseIp4("127.0.0.1", port) catch unreachable);
         try final_list.append(allocator, std.net.Address.parseIp6("::1", port) catch unreachable);
     } else {
-        if (builtin.os.tag == .windows) {
+        const resolver_override = options.resolvers;
+
+        if (builtin.os.tag == .windows and resolver_override == null) {
             const name_c = try allocator.dupeZ(u8, incoming_name);
             defer allocator.free(name_c);
 
@@ -663,14 +715,10 @@ pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.A
 
             if (final_list.items.len == 0) {
                 // if that didn't work, go to dns server
-                const addrs_v4 = try fetchTrustedAddresses(allocator, name, .A);
-                defer allocator.free(addrs_v4);
-                for (addrs_v4) |addr| try final_list.append(allocator, addr);
-
-                const addrs_v6 = try fetchTrustedAddresses(allocator, name, .AAAA);
-                defer allocator.free(addrs_v6);
-                for (addrs_v6) |addr| try final_list.append(allocator, addr);
+                try resolveViaDns(&final_list, allocator, name, resolver_override);
             }
+        } else if (resolver_override) |_| {
+            try resolveViaDns(&final_list, allocator, name, resolver_override);
         } else {
             try final_list.append(allocator, std.net.Address.parseIp4("1.1.1.1", port) catch unreachable);
         }

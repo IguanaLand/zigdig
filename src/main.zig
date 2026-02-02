@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const dns = @import("lib.zig");
+const cli_helpers = @import("cli_helpers.zig");
 
 const logger = std.log.scoped(.zigdig_main);
 
@@ -51,15 +52,48 @@ pub fn main() !void {
     defer args_it.deinit();
     _ = args_it.skip();
 
-    const name_string = (args_it.next() orelse {
+    var resolvers = std.ArrayList(dns.helpers.ResolverEndpoint).empty;
+    defer resolvers.deinit(allocator);
+
+    var name_arg: ?[]const u8 = null;
+    var qtype_arg: ?[]const u8 = null;
+
+    while (args_it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--dns") or std.mem.eql(u8, arg, "-s")) {
+            const resolver_arg = args_it.next() orelse {
+                logger.warn("missing resolver after {s}", .{arg});
+                return error.InvalidArgs;
+            };
+            const endpoint = cli_helpers.parseResolverEndpoint(resolver_arg) catch {
+                logger.warn("invalid resolver: {s}", .{resolver_arg});
+                return error.InvalidArgs;
+            };
+            try resolvers.append(allocator, endpoint);
+            continue;
+        }
+
+        if (name_arg == null) {
+            name_arg = arg;
+            continue;
+        }
+        if (qtype_arg == null) {
+            qtype_arg = arg;
+            continue;
+        }
+
+        logger.warn("too many arguments", .{});
+        return error.InvalidArgs;
+    }
+
+    const name_string = name_arg orelse {
         logger.warn("no name provided", .{});
         return error.InvalidArgs;
-    });
+    };
 
-    const qtype_str = (args_it.next() orelse {
+    const qtype_str = qtype_arg orelse {
         logger.warn("no qtype provided", .{});
         return error.InvalidArgs;
-    });
+    };
 
     const qtype = dns.ResourceType.fromString(qtype_str) catch |err| switch (err) {
         error.InvalidResourceType => {
@@ -97,7 +131,13 @@ pub fn main() !void {
 
     logger.debug("packet: {any}", .{packet});
 
-    const conn = if (builtin.os.tag == .windows) try dns.helpers.connectToResolver("8.8.8.8", null) else try dns.helpers.connectToSystemResolver();
+    const resolver_override = if (resolvers.items.len > 0) resolvers.items else null;
+    const conn = if (resolver_override) |list|
+        try dns.helpers.connectToResolver(list[0].address, list[0].port)
+    else if (builtin.os.tag == .windows)
+        try dns.helpers.connectToResolver("8.8.8.8", null)
+    else
+        try dns.helpers.connectToSystemResolver();
     defer conn.close();
 
     var addr_buffer: [128]u8 = undefined;
