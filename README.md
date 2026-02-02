@@ -1,27 +1,28 @@
 # zigdig
 
-naive dns client library in zig
+A small, naive DNS client library in Zig.
 
-help me decide if this api is good: https://github.com/lun-4/zigdig/issues/10
+Help me decide if this API is good:
+https://github.com/lun-4/zigdig/issues/10
 
-## what does it do
- - serialization and deserialization of dns packets as per rfc1035
- - supports a subset of rdata (i do not have any plans to support 100% of DNS, but SRV/MX/TXT/A/AAAA
-  are there, which most likely will be enough for your use cases)
- - has helpers for reading `/etc/resolv.conf` (not that much, really)
+## What it does
 
-## what does it not do
- - no edns0
- - support all resolv.conf options
- - can deserialize pointer labels, but does not serialize into pointers
- - follow CNAME records, this provides only the basic
-   serialization/deserializtion
+- Serialize and deserialize DNS packets (RFC 1035).
+- Support a subset of RDATA: SRV, MX, TXT, A, AAAA.
+- Provide helpers for reading `/etc/resolv.conf`.
 
-## how do
+## What it does not do
 
- - zig 0.14.0: https://ziglang.org
- - have a `/etc/resolv.conf`
- - tested on linux, should work on bsd i think
+- EDNS0.
+- Support all `resolv.conf` options.
+- Serialize pointer labels (it can deserialize them).
+- Follow CNAME records; this is only basic serialization/deserialization.
+
+## Requirements
+
+- Zig 0.14.0: https://ziglang.org
+- A valid `/etc/resolv.conf`
+- Tested on Linux; should work on BSD
 
 ```
 git clone ...
@@ -39,23 +40,24 @@ zig build -Drelease
 zig build -Dstrip
 ```
 
-and then
+And then:
 
 ```bash
 zigdig google.com a
 ```
 
-or, for the host(1) equivalent
+Or, for the `host(1)` equivalent:
 
 ```bash
 zigdig-tiny google.com
 ```
 
-## using the library
+## Using the library
 
 ### getAddressList-style api
 
 ```zig
+const std = @import("std");
 const dns = @import("dns");
 
 pub fn main() !void {
@@ -63,7 +65,7 @@ pub fn main() !void {
     defer {
         _ = gpa.deinit();
     }
-    var allocator = gpa.alloator();
+    var allocator = gpa.allocator();
 
     var addresses = try dns.helpers.getAddressList("ziglang.org", allocator);
     defer addresses.deinit();
@@ -77,6 +79,7 @@ pub fn main() !void {
 ### full api
 
 ```zig
+const std = @import("std");
 const dns = @import("dns");
 
 pub fn main() !void {
@@ -84,7 +87,7 @@ pub fn main() !void {
     defer {
         _ = gpa.deinit();
     }
-    var allocator = gpa.alloator();
+    var allocator = gpa.allocator();
 
     var name_buffer: [128][]const u8 = undefined;
     const name = try dns.Name.fromString("ziglang.org", &name_buffer);
@@ -110,32 +113,32 @@ pub fn main() !void {
         .additionals = &[_]dns.Resource{},
     };
 
-    // use helper function to connect to a resolver in the systems'
-    // resolv.conf
+    // Use a helper function to connect to a resolver in the system's
+    // resolv.conf.
 
     const conn = try dns.helpers.connectToSystemResolver();
     defer conn.close();
 
     try conn.sendPacket(packet);
 
-    // you can also do this to support any Writer
+    // You can also do this to support any Writer:
     // const written_bytes = try packet.writeTo(some_fun_writer_goes_here);
 
     const reply = try conn.receivePacket(allocator, 4096);
     defer reply.deinit();
 
-    // you can also do this to support any Reader
+    // You can also do this to support any Reader:
     // const packet = try dns.Packet.readFrom(some_fun_reader, allocator);
     // defer packet.deinit();
 
     const reply_packet = reply.packet;
-    logger.info("reply: {}", .{reply_packet});
+    std.log.info("reply: {}", .{reply_packet});
 
     try std.testing.expectEqual(packet.header.id, reply_packet.header.id);
     try std.testing.expect(reply_packet.header.is_response);
 
-    // ASSERTS that there's one A resource in the answer!!! you should verify
-    // reply_packet.header.opcode to see if there's any errors
+    // ASSERTS that there's one A resource in the answer!!! You should verify
+    // reply_packet.header.opcode to see if there are any errors.
 
     const resource = reply_packet.answers[0];
     var resource_data = try dns.ResourceData.fromOpaque(
@@ -146,14 +149,15 @@ pub fn main() !void {
     );
     defer resource_data.deinit(allocator);
 
-    // you now have an std.net.Address to use to your hearts content
+    // You now have an std.net.Address to use to your heart's content.
     const ziglang_address = resource_data.A;
 }
 
 ```
 
-it is recommended to look at zigdig's source on `src/main.zig` to understand
+It is recommended to look at zigdig's source in `src/main.zig` to understand
 how things tick using the library, but it boils down to three things:
- - packet generation and serialization
- - sending/receiving (via a small shim on top of std.os.socket)
- - packet deserialization
+
+- Packet generation and serialization.
+- Sending/receiving (via a small shim on top of `std.os.socket`).
+- Packet deserialization.
