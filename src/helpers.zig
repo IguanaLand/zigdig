@@ -397,8 +397,23 @@ pub fn receiveTrustedAddresses(
 
     var current_resource: ?dns.Resource = null;
 
-    while (try parser.next()) |part| {
-        switch (part) {
+    parse_loop: while (true) {
+        const part = parser.next() catch |err| switch (err) {
+            error.InvalidLabelType => {
+                if (parser.state == .additional or parser.state == .additional_rdata) {
+                    logger.warn(
+                        "invalid label type while parsing additional records; returning partial results",
+                        .{},
+                    );
+                    break :parse_loop;
+                }
+                return err;
+            },
+            else => return err,
+        };
+        if (part == null) break;
+        const part_unwrapped = part.?;
+        switch (part_unwrapped) {
             .header => |header| {
                 if (options.requested_packet_header) |given_header| {
                     if (given_header.id != header.id)

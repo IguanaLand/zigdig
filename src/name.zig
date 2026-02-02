@@ -161,9 +161,11 @@ pub const Name = union(enum) {
             offset &= ~@as(u16, 1 << 14);
 
             return LabelComponent{ .Pointer = offset };
+        } else if (bit1 or bit2) {
+            // 01/10 label types are unsupported/invalid for this parser.
+            return error.InvalidLabelType;
         } else {
             // those must be 0 for a correct label length to be made
-            std.debug.assert((!bit1) and (!bit2));
 
             // the next <possible_length> bytes contain a full label.
             if (maybe_allocator) |allocator| {
@@ -173,7 +175,7 @@ pub const Name = union(enum) {
                     "possible_length = {d} read_bytes = {d} label.len = {d}",
                     .{ possible_length, read_bytes, label.len },
                 );
-                std.debug.assert(read_bytes == label.len);
+                if (read_bytes != label.len) return error.EndOfStream;
                 return LabelComponent{ .Full = label };
             } else {
                 logger.debug("read_name: skip {d} bytes as no alloc", .{possible_length});
