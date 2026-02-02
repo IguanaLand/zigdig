@@ -20,6 +20,25 @@ fn logfn(
     }
 }
 
+fn formatAddressNoPort(address: std.net.Address, buffer: []u8) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try address.format(&writer);
+    const full = writer.buffered();
+    if (full.len == 0) return full;
+
+    if (full[0] == '[') {
+        if (std.mem.indexOfScalar(u8, full, ']')) |idx| {
+            return full[1..idx];
+        }
+    }
+
+    if (std.mem.lastIndexOfScalar(u8, full, ':')) |idx| {
+        return full[0..idx];
+    }
+
+    return full;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -48,9 +67,12 @@ pub fn main() !void {
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_file_writer = std.fs.File.stdout().writer(stdout_buffer[0..]);
+    defer stdout_file_writer.interface.flush() catch {};
     var stdout = &stdout_file_writer.interface;
 
     for (addrs.addrs) |addr| {
-        try stdout.print("{s} has address {any}\n", .{ name_string, addr });
+        var addr_buffer: [128]u8 = undefined;
+        const addr_str = try formatAddressNoPort(addr, &addr_buffer);
+        try stdout.print("{s} has address {s}\n", .{ name_string, addr_str });
     }
 }
