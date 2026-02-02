@@ -20,7 +20,7 @@ https://github.com/lun-4/zigdig/issues/10
 
 ## Requirements
 
-- Zig 0.14.0: https://ziglang.org
+- Zig 0.15.x: https://ziglang.org
 - A valid `/etc/resolv.conf`
 - Tested on Linux; should work on BSD
 
