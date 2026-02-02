@@ -31,6 +31,14 @@ zig build test
 zig build install --prefix ~/.local/
 ```
 
+Build modes:
+
+```
+zig build -Ddebug
+zig build -Drelease
+zig build -Dstrip
+```
+
 and then
 
 ```bash

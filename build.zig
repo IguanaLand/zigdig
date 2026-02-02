@@ -2,9 +2,21 @@ const std = @import("std");
 const Builder = std.Build;
 pub fn build(b: *Builder) void {
     const option_libc = (b.option(bool, "libc", "build with libc?")) orelse false;
+    const force_release = (b.option(bool, "release", "build in ReleaseSafe mode")) orelse false;
+    const force_debug = (b.option(bool, "debug", "build in Debug mode")) orelse false;
+    const strip_binaries = b.option(bool, "strip", "strip debug symbols from binaries");
     const target = b.standardTargetOptions(.{});
 
-    const optimize = b.standardOptimizeOption(.{});
+    if (force_release and force_debug) {
+        @panic("build options conflict: -Drelease and -Ddebug are mutually exclusive");
+    }
+
+    const optimize = if (force_release)
+        .ReleaseSafe
+    else if (force_debug)
+        .Debug
+    else
+        b.standardOptimizeOption(.{});
 
     // this exports both a library and a binary
 
@@ -15,6 +27,7 @@ pub fn build(b: *Builder) void {
             .target = target,
             .optimize = optimize,
             .link_libc = option_libc,
+            .strip = strip_binaries,
         }),
     });
     b.installArtifact(exe);
@@ -26,6 +39,7 @@ pub fn build(b: *Builder) void {
             .target = target,
             .optimize = optimize,
             .link_libc = option_libc,
+            .strip = strip_binaries,
         }),
     });
     b.installArtifact(exe_tinyhost);
@@ -35,6 +49,7 @@ pub fn build(b: *Builder) void {
         .target = target,
         .optimize = optimize,
         .link_libc = option_libc,
+        .strip = strip_binaries,
     });
     const lib_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -42,6 +57,7 @@ pub fn build(b: *Builder) void {
             .target = target,
             .optimize = optimize,
             .link_libc = option_libc,
+            .strip = strip_binaries,
         }),
     });
 
