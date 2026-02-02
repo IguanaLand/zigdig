@@ -165,28 +165,27 @@ pub fn main() !void {
     // You can also do this to support any Writer:
     // const written_bytes = try packet.writeTo(some_fun_writer_goes_here);
 
-    const reply = try conn.receivePacket(allocator, 4096);
-    defer reply.deinit();
+    const reply = try conn.receiveFullPacket(allocator, 4096, .{});
+    defer reply.deinit(.{});
 
     // You can also do this to support any Reader:
-    // const packet = try dns.Packet.readFrom(some_fun_reader, allocator);
-    // defer packet.deinit();
+    // const incoming = try dns.helpers.parseFullPacket(some_fun_reader, allocator, .{});
+    // defer incoming.deinit(.{});
 
     const reply_packet = reply.packet;
-    std.log.info("reply: {}", .{reply_packet});
+    std.log.info("reply: {any}", .{reply_packet});
 
     try std.testing.expectEqual(packet.header.id, reply_packet.header.id);
     try std.testing.expect(reply_packet.header.is_response);
 
     // ASSERTS that there's one A resource in the answer!!! You should verify
-    // reply_packet.header.opcode to see if there are any errors.
+    // reply_packet.header.response_code to see if there are any errors.
 
     const resource = reply_packet.answers[0];
     var resource_data = try dns.ResourceData.fromOpaque(
-        reply_packet,
         resource.typ,
-        resource.opaque_rdata,
-        allocator
+        resource.opaque_rdata.?,
+        .{},
     );
     defer resource_data.deinit(allocator);
 
