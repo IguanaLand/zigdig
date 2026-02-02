@@ -46,7 +46,9 @@ pub fn main() !void {
     var addrs = try dns.helpers.getAddressList(name_string, 80, allocator);
     defer addrs.deinit();
 
-    var stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_file_writer = std.fs.File.stdout().writer(stdout_buffer[0..]);
+    var stdout = &stdout_file_writer.interface;
 
     for (addrs.addrs) |addr| {
         try stdout.print("{s} has address {any}\n", .{ name_string, addr });

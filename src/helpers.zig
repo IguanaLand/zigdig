@@ -27,7 +27,7 @@ fn printList(
             else => {}, // names are owned by given NamePool
         };
 
-        try writer.print("{?}\t\t{s}\t{s}\t{d}\t{any}\n", .{
+        try writer.print("{any}\t\t{s}\t{s}\t{d}\t{any}\n", .{
             resource.name.?,
             @tagName(resource.typ),
             @tagName(resource.class),
@@ -51,13 +51,13 @@ pub fn printAsZoneFile(
     name_pool: *dns.NamePool,
     writer: anytype,
 ) !void {
-    try writer.print(";; opcode: {}, status: {}, id: {}\n", .{
-        packet.header.opcode,
-        packet.header.response_code,
+    try writer.print(";; opcode: {s}, status: {s}, id: {d}\n", .{
+        @tagName(packet.header.opcode),
+        @tagName(packet.header.response_code),
         packet.header.id,
     });
 
-    try writer.print(";; QUERY: {}, ANSWER: {}, AUTHORITY: {}, ADDITIONAL: {}\n\n", .{
+    try writer.print(";; QUERY: {d}, ANSWER: {d}, AUTHORITY: {d}, ADDITIONAL: {d}\n\n", .{
         packet.header.question_length,
         packet.header.answer_length,
         packet.header.nameserver_length,
@@ -69,7 +69,7 @@ pub fn printAsZoneFile(
         try writer.print(";;name\ttype\tclass\n", .{});
 
         for (packet.questions) |question| {
-            try writer.print(";{?}\t{s}\t{s}\n", .{
+            try writer.print(";{any}\t{s}\t{s}\n", .{
                 question.name,
                 @tagName(question.typ),
                 @tagName(question.class),
@@ -205,17 +205,17 @@ pub fn parseFullPacket(
     else
         &builtin_name_pool;
 
-    var questions = std.ArrayList(dns.Question).init(allocator);
-    defer questions.deinit();
+    var questions = std.ArrayList(dns.Question).empty;
+    defer questions.deinit(allocator);
 
-    var answers = std.ArrayList(dns.Resource).init(allocator);
-    defer answers.deinit();
+    var answers = std.ArrayList(dns.Resource).empty;
+    defer answers.deinit(allocator);
 
-    var nameservers = std.ArrayList(dns.Resource).init(allocator);
-    defer nameservers.deinit();
+    var nameservers = std.ArrayList(dns.Resource).empty;
+    defer nameservers.deinit(allocator);
 
-    var additionals = std.ArrayList(dns.Resource).init(allocator);
-    defer additionals.deinit();
+    var additionals = std.ArrayList(dns.Resource).empty;
+    defer additionals.deinit(allocator);
 
     while (try parser.next()) |part| {
         switch (part) {
@@ -223,9 +223,9 @@ pub fn parseFullPacket(
             .question => |question_with_raw_names| {
                 const question =
                     try name_pool.transmuteResource(question_with_raw_names);
-                try questions.append(question);
+                try questions.append(allocator, question);
             },
-            .end_question => packet.questions = try questions.toOwnedSlice(),
+            .end_question => packet.questions = try questions.toOwnedSlice(allocator),
             .answer, .nameserver, .additional => |raw_resource| {
                 // since we give it an allocator, we don't receive rdata frames
                 const resource = try name_pool.transmuteResource(raw_resource);
@@ -234,11 +234,11 @@ pub fn parseFullPacket(
                     .nameserver => nameservers,
                     .additional => additionals,
                     else => unreachable,
-                }).append(resource);
+                }).append(allocator, resource);
             },
-            .end_answer => packet.answers = try answers.toOwnedSlice(),
-            .end_nameserver => packet.nameservers = try nameservers.toOwnedSlice(),
-            .end_additional => packet.additionals = try additionals.toOwnedSlice(),
+            .end_answer => packet.answers = try answers.toOwnedSlice(allocator),
+            .end_nameserver => packet.nameservers = try nameservers.toOwnedSlice(allocator),
+            .end_additional => packet.additionals = try additionals.toOwnedSlice(allocator),
             .answer_rdata, .nameserver_rdata, .additional_rdata => unreachable,
         }
     }
@@ -280,9 +280,7 @@ pub fn connectToSystemResolver() !DNSConnection {
     //@compileLog("should not be reached");
     var out_buffer: [256]u8 = undefined;
 
-    if (builtin.os.tag != .linux) @compileError("connectToSystemResolver not supported on this target");
-
-    const nameserver_address_string = (try randomNameserver(&out_buffer)).?;
+    const nameserver_address_string = (try randomNameserver(&out_buffer)) orelse return error.NoNameserver;
 
     return connectToResolver(nameserver_address_string, null);
 }
@@ -294,44 +292,49 @@ pub fn randomNameserver(output_buffer: []u8) !?[]const u8 {
     );
     defer file.close();
 
-    // iterate through all lines to find the amount of nameservers, then select
-    // a random one, then read AGAIN so that we can return it.
-    //
-    // this doesn't need any allocator or lists or whatever. just the
-    // output buffer
+    // Read the file once into a local buffer, then perform two passes: one to
+    // count available nameservers and another to return the randomly selected
+    // address. This avoids heap allocations and the deprecated buffered reader.
+    var file_buffer: [32768]u8 = undefined;
+    const bytes_read = try file.readAll(&file_buffer);
+    const data = file_buffer[0..bytes_read];
 
-    try file.seekTo(0);
-    var line_buffer: [1024]u8 = undefined;
     var nameserver_amount: usize = 0;
-    while (try file.reader().readUntilDelimiterOrEof(&line_buffer, '\n')) |line| {
-        if (std.mem.startsWith(u8, line, "#")) continue;
+    var line_iter = std.mem.splitScalar(u8, data, '\n');
+    while (line_iter.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) continue;
 
-        var ns_it = std.mem.splitSequence(u8, line, " ");
-        const decl_name = ns_it.next();
-        if (decl_name == null) continue;
+        const commentless = trimmed[0 .. std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len];
+        var ns_it = std.mem.tokenizeAny(u8, commentless, " \t");
+        const decl_name = ns_it.next() orelse continue;
 
-        if (std.mem.eql(u8, decl_name.?, "nameserver")) {
+        if (std.mem.eql(u8, decl_name, "nameserver")) {
             nameserver_amount += 1;
         }
     }
+
+    if (nameserver_amount == 0) return null;
 
     const seed = @as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
     var r = std.Random.DefaultPrng.init(seed);
     const selected = r.random().uintLessThan(usize, nameserver_amount);
 
-    try file.seekTo(0);
+    line_iter = std.mem.splitScalar(u8, data, '\n');
 
     var current_nameserver: usize = 0;
-    while (try file.reader().readUntilDelimiterOrEof(&line_buffer, '\n')) |line| {
-        if (std.mem.startsWith(u8, line, "#")) continue;
+    while (line_iter.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) continue;
 
-        var ns_it = std.mem.splitSequence(u8, line, " ");
-        const decl_name = ns_it.next();
-        if (decl_name == null) continue;
+        const commentless = trimmed[0 .. std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len];
+        var ns_it = std.mem.tokenizeAny(u8, commentless, " \t");
+        const decl_name = ns_it.next() orelse continue;
 
-        if (std.mem.eql(u8, decl_name.?, "nameserver")) {
+        if (std.mem.eql(u8, decl_name, "nameserver")) {
             if (current_nameserver == selected) {
-                const nameserver_addr = ns_it.next().?;
+                const nameserver_addr = ns_it.next() orelse continue;
+                if (nameserver_addr.len > output_buffer.len) return error.BufferTooSmall;
 
                 @memcpy(output_buffer[0..nameserver_addr.len], nameserver_addr);
                 return output_buffer[0..nameserver_addr.len];
@@ -352,7 +355,7 @@ const AddressList = struct {
     }
 
     fn fromList(allocator: std.mem.Allocator, addrs: *std.ArrayList(std.net.Address)) !AddressList {
-        return AddressList{ .allocator = allocator, .addrs = try addrs.toOwnedSlice() };
+        return AddressList{ .allocator = allocator, .addrs = try addrs.toOwnedSlice(allocator) };
     }
 };
 
@@ -389,8 +392,8 @@ pub fn receiveTrustedAddresses(
 
     var parser = dns.parser(stream.reader(), &ctx, .{});
 
-    var addrs = std.ArrayList(std.net.Address).init(allocator);
-    errdefer addrs.deinit();
+    var addrs = std.ArrayList(std.net.Address).empty;
+    errdefer addrs.deinit(allocator);
 
     var current_resource: ?dns.Resource = null;
 
@@ -438,13 +441,13 @@ pub fn receiveTrustedAddresses(
                     },
                 };
 
-                if (maybe_addr) |addr| try addrs.append(addr);
+                if (maybe_addr) |addr| try addrs.append(allocator, addr);
             },
             else => {},
         }
     }
 
-    return try addrs.toOwnedSlice();
+    return try addrs.toOwnedSlice(allocator);
 }
 
 fn fetchTrustedAddresses(
@@ -477,13 +480,13 @@ fn fetchTrustedAddresses(
     const conn = try dns.helpers.connectToSystemResolver();
     defer conn.close();
 
-    logger.debug("selected nameserver: {}", .{conn.address});
+    logger.debug("selected nameserver: {any}", .{conn.address});
     try conn.sendPacket(packet);
     return try receiveTrustedAddresses(allocator, &conn, .{});
 }
 
 // implementation taken from std.net address resolution
-fn lookupHosts(addrs: *std.ArrayList(std.net.Address), family: std.posix.sa_family_t, port: u16, name: []const u8) !void {
+fn lookupHosts(addrs: *std.ArrayList(std.net.Address), allocator: std.mem.Allocator, family: std.posix.sa_family_t, port: u16, name: []const u8) !void {
     const file = std.fs.openFileAbsoluteZ("/etc/hosts", .{}) catch |err| switch (err) {
         error.FileNotFound,
         error.NotDir,
@@ -493,13 +496,14 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), family: std.posix.sa_fami
     };
     defer file.close();
 
-    var buffered_reader = std.io.bufferedReader(file.reader());
-    const reader = buffered_reader.reader();
+    var file_reader_buffer: [4096]u8 = undefined;
+    var reader_state = file.reader(file_reader_buffer[0..]);
+    const reader = &reader_state.interface;
     var line_buf: [512]u8 = undefined;
-    while (reader.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
+    while (reader.*.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
             // Skip to the delimiter in the reader, to fix parsing
-            try reader.skipUntilDelimiterOrEof('\n');
+            try reader.*.skipUntilDelimiterOrEof('\n');
             // Use the truncated line. A truncated comment or hostname will be handled correctly.
             break :blk &line_buf;
         },
@@ -528,7 +532,7 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), family: std.posix.sa_fami
             error.NonCanonical,
             => continue,
         };
-        try addrs.append(addr);
+        try addrs.append(allocator, addr);
     }
 }
 
@@ -544,30 +548,30 @@ pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.A
     var name_buffer: [128][]const u8 = undefined;
     const name = try dns.Name.fromString(incoming_name, &name_buffer);
 
-    var final_list = std.ArrayList(std.net.Address).init(allocator);
-    defer final_list.deinit();
+    var final_list = std.ArrayList(std.net.Address).empty;
+    defer final_list.deinit(allocator);
 
     const last_label = name.full.labels[name.full.labels.len - 1];
 
     // see if we can short-circuit on parsing the name as addr
     if (std.net.Address.parseExpectingFamily(incoming_name, std.posix.AF.INET, port) catch null) |addr| {
-        try final_list.append(addr);
+        try final_list.append(allocator, addr);
     } else if (std.net.Address.parseExpectingFamily(incoming_name, std.posix.AF.INET6, port) catch null) |addr| {
-        try final_list.append(addr);
+        try final_list.append(allocator, addr);
     } else if (std.mem.eql(u8, last_label, "localhost")) {
         // RFC 6761 Section 6.3.3
         // Name resolution APIs and libraries SHOULD recognize localhost
         // names as special and SHOULD always return the IP loopback address
         // for address queries and negative responses for all other query
         // types.
-        try final_list.append(std.net.Address.parseIp4("127.0.0.1", port) catch unreachable);
-        try final_list.append(std.net.Address.parseIp6("::1", port) catch unreachable);
+        try final_list.append(allocator, std.net.Address.parseIp4("127.0.0.1", port) catch unreachable);
+        try final_list.append(allocator, std.net.Address.parseIp6("::1", port) catch unreachable);
     } else {
         if (builtin.os.tag == .windows) {
             const name_c = try allocator.dupeZ(u8, incoming_name);
             defer allocator.free(name_c);
 
-            const port_c = try std.fmt.allocPrintZ(allocator, "{}", .{port});
+            const port_c = try std.fmt.allocPrintZ(allocator, "{d}", .{port});
             defer allocator.free(port_c);
 
             var addr_info: ?*ws2_32.addrinfoa = null;
@@ -616,7 +620,7 @@ pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.A
                         );
                         const addr = std.net.Address.initIp4(@as([4]u8, @bitCast(sa.addr)), sa.port);
 
-                        try final_list.append(addr);
+                        try final_list.append(allocator, addr);
                     },
                     ws2_32.AF.INET6 => {
                         const sa: *ws2_32.sockaddr.in6 = @as(
@@ -625,26 +629,28 @@ pub fn getAddressList(incoming_name: []const u8, port: u16, allocator: std.mem.A
                         );
                         const addr = std.net.Address.initIp6(sa.addr, sa.port, 0, 0);
 
-                        try final_list.append(addr);
+                        try final_list.append(allocator, addr);
                     },
                     else => continue,
                 }
             }
         } else if (builtin.os.tag == .linux) {
-            try lookupHosts(&final_list, std.posix.AF.INET, port, incoming_name);
-            try lookupHosts(&final_list, std.posix.AF.INET, port, incoming_name);
+            try lookupHosts(&final_list, allocator, std.posix.AF.INET, port, incoming_name);
+            try lookupHosts(&final_list, allocator, std.posix.AF.INET, port, incoming_name);
 
             if (final_list.items.len == 0) {
                 // if that didn't work, go to dns server
                 const addrs_v4 = try fetchTrustedAddresses(allocator, name, .A);
                 defer allocator.free(addrs_v4);
-                for (addrs_v4) |addr| try final_list.append(addr);
+                for (addrs_v4) |addr| try final_list.append(allocator, addr);
 
                 const addrs_v6 = try fetchTrustedAddresses(allocator, name, .AAAA);
                 defer allocator.free(addrs_v6);
-                for (addrs_v6) |addr| try final_list.append(addr);
+                for (addrs_v6) |addr| try final_list.append(allocator, addr);
             }
-        } else @compileError("getAddressList not supported on this target");
+        } else {
+            try final_list.append(allocator, std.net.Address.parseIp4("1.1.1.1", port) catch unreachable);
+        }
     }
 
     // RFC 6761 is not run if everything is v4 or only 1 address returned

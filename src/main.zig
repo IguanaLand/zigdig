@@ -89,16 +89,18 @@ pub fn main() !void {
         .additionals = &empty,
     };
 
-    logger.debug("packet: {}", .{packet});
+    logger.debug("packet: {any}", .{packet});
 
     const conn = if (builtin.os.tag == .windows) try dns.helpers.connectToResolver("8.8.8.8", null) else try dns.helpers.connectToSystemResolver();
     defer conn.close();
 
-    logger.info("selected nameserver: {}\n", .{conn.address});
-    const stdout = std.io.getStdOut();
+    logger.info("selected nameserver: {any}\n", .{conn.address});
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer = std.fs.File.stdout().writer(stdout_buffer[0..]);
+    const stdout = &stdout_file_writer.interface;
 
     // print out our same question as a zone file for debugging purposes
-    try dns.helpers.printAsZoneFile(&packet, undefined, stdout.writer());
+    try dns.helpers.printAsZoneFile(&packet, undefined, stdout);
 
     try conn.sendPacket(packet);
 
@@ -116,10 +118,10 @@ pub fn main() !void {
     defer reply.deinit(.{ .names = false });
 
     const reply_packet = reply.packet;
-    logger.debug("reply: {}", .{reply_packet});
+    logger.debug("reply: {any}", .{reply_packet});
 
     try std.testing.expectEqual(packet.header.id, reply_packet.header.id);
     try std.testing.expect(reply_packet.header.is_response);
 
-    try dns.helpers.printAsZoneFile(reply_packet, &name_pool, stdout.writer());
+    try dns.helpers.printAsZoneFile(reply_packet, &name_pool, stdout);
 }

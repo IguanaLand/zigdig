@@ -71,7 +71,8 @@ pub const ResourceType = enum(u16) {
     }
 
     pub fn readFrom(reader: anytype) !Self {
-        const resource_type_int = try reader.readInt(u16, .big);
+        var mutable_reader = reader;
+        const resource_type_int = try mutable_reader.readInt(u16, .big);
         return std.meta.intToEnum(Self, resource_type_int) catch |err| {
             logger.err(
                 "unknown resource type {d}, got {s}",
@@ -101,7 +102,8 @@ pub const ResourceClass = enum(u16) {
     WILDCARD = 255,
 
     pub fn readFrom(reader: anytype) !@This() {
-        const resource_class_int = try reader.readInt(u16, .big);
+        var mutable_reader = reader;
+        const resource_class_int = try mutable_reader.readInt(u16, .big);
         return std.meta.intToEnum(@This(), resource_class_int) catch |err| {
             logger.err(
                 "unknown resource class {d}, got {s}",

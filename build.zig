@@ -10,27 +10,39 @@ pub fn build(b: *Builder) void {
 
     const exe = b.addExecutable(.{
         .name = "zigdig",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = option_libc,
+        }),
     });
-    if (option_libc) exe.linkLibC();
     b.installArtifact(exe);
 
     const exe_tinyhost = b.addExecutable(.{
         .name = "zigdig-tiny",
-        .root_source_file = b.path("src/main_tinyhost.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main_tinyhost.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = option_libc,
+        }),
     });
-    if (option_libc) exe.linkLibC();
     b.installArtifact(exe_tinyhost);
 
-    _ = b.addModule("zigdig", .{ .root_source_file = b.path("src/lib.zig") });
-    const lib_tests = b.addTest(.{
-        .root_source_file = b.path("src/test.zig"),
+    _ = b.addModule("zigdig", .{
+        .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = option_libc,
+    });
+    const lib_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = option_libc,
+        }),
     });
 
     const run_lib_unit_tests = b.addRunArtifact(lib_tests);

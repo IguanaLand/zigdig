@@ -159,7 +159,7 @@ pub const CidrRange = struct {
 
         switch (self.version) {
             .v4 => {
-                try writer.print("{}.{}.{}.{}/{}", .{
+                try writer.print("{d}.{d}.{d}.{d}/{d}", .{
                     self.first_address[12],
                     self.first_address[13],
                     self.first_address[14],
@@ -169,7 +169,7 @@ pub const CidrRange = struct {
             },
             .v6 => {
                 const addr = std.net.Ip6Address.init(self.first_address, 0, 0, 0);
-                try writer.print("{}/{}", .{ addr, self.prefix_len });
+                try writer.print("{any}/{d}", .{ addr, self.prefix_len });
             },
         }
     }

@@ -143,10 +143,46 @@ pub fn WrapperReader(comptime ReaderType: anytype) type {
             return bytes_read;
         }
 
-        pub const Error = ReaderType.Error;
-        pub const Reader = std.io.Reader(*Self, Error, read);
+        pub const Reader = struct {
+            context: *Self,
+            pub const Error = ReaderType.Error || error{ EndOfStream, InvalidEnumTag };
+
+            pub fn read(self: *Reader, buffer: []u8) Error!usize {
+                return self.context.read(buffer);
+            }
+
+            pub fn readNoEof(self: *Reader, buffer: []u8) Error!void {
+                const amt = try self.read(buffer);
+                if (amt != buffer.len) return error.EndOfStream;
+            }
+
+            pub fn readInt(self: *Reader, comptime T: type, endian: std.builtin.Endian) Error!T {
+                var tmp: [@sizeOf(T)]u8 = undefined;
+                try self.readNoEof(&tmp);
+                return std.mem.readInt(T, &tmp, endian);
+            }
+
+            pub fn readEnum(self: *Reader, comptime T: type, endian: std.builtin.Endian) Error!T {
+                const Tag = @typeInfo(T).@"enum".tag_type;
+                const raw = try self.readInt(Tag, endian);
+                return std.meta.intToEnum(T, raw) catch return error.InvalidEnumTag;
+            }
+
+            pub fn skipBytes(self: *Reader, len: usize, options: anytype) Error!void {
+                _ = options;
+                var remaining = len;
+                var buffer: [256]u8 = undefined;
+                while (remaining > 0) {
+                    const chunk = @min(remaining, buffer.len);
+                    const read_count = try self.read(buffer[0..chunk]);
+                    if (read_count == 0) return error.EndOfStream;
+                    remaining -= read_count;
+                }
+            }
+        };
+
         pub fn reader(self: *Self) Reader {
-            return Reader{ .context = self };
+            return .{ .context = self };
         }
     };
 }
@@ -187,7 +223,7 @@ pub fn Parser(comptime ReaderType: type) type {
         pub fn next(self: *Self) !?ParserFrame {
             // self.state dictates what we *want* from the reader
             // at the moment, first state always being header.
-            logger.debug("next(): enter {}", .{self.state});
+            logger.debug("next(): enter {any}", .{self.state});
 
             logger.debug(
                 "parser reader is at {d} bytes of message",
@@ -204,7 +240,7 @@ pub fn Parser(comptime ReaderType: type) type {
                     self.ctx.header = header;
                     self.state = .question;
                     logger.debug(
-                        "next(): header read ({?}). state is now {}",
+                        "next(): header read ({any}). state is now {any}",
                         .{ self.ctx.header, self.state },
                     );
                     return ParserFrame{ .header = header };
@@ -257,7 +293,7 @@ pub fn Parser(comptime ReaderType: type) type {
                         };
 
                         logger.debug(
-                            "end resource list. state transition {} -> {}",
+                            "end resource list. state transition {any} -> {any}",
                             .{ old_state, self.state },
                         );
 
@@ -285,7 +321,7 @@ pub fn Parser(comptime ReaderType: type) type {
                             };
                         }
 
-                        logger.debug("resource from {}: {}", .{ old_state, raw_resource });
+                        logger.debug("resource from {any}: {any}", .{ old_state, raw_resource });
 
                         return switch (old_state) {
                             .answer => ParserFrame{ .answer = raw_resource },

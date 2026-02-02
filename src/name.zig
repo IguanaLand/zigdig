@@ -55,11 +55,12 @@ pub const Name = union(enum) {
         reader: anytype,
         options: dns.ParserOptions,
     ) !?Self {
-        const current_byte_index = reader.context.ctx.current_byte_count;
+        var mutable_reader = reader;
+        const current_byte_index = mutable_reader.context.ctx.current_byte_count;
 
         if (options.allocator) |allocator| {
-            var components = std.ArrayList(LabelComponent).init(allocator);
-            defer components.deinit();
+            var components = std.ArrayList(LabelComponent).empty;
+            defer components.deinit(allocator);
 
             var has_pointer: bool = false;
 
@@ -67,9 +68,9 @@ pub const Name = union(enum) {
                 if (components.items.len > options.max_label_size)
                     return error.Overflow;
 
-                const component = (try Self.readLabelComponent(reader, allocator)).?;
-                logger.debug("read name: component {}", .{component});
-                try components.append(component);
+                const component = (try Self.readLabelComponent(&mutable_reader, allocator)).?;
+                logger.debug("read name: component {any}", .{component});
+                try components.append(allocator, component);
                 switch (component) {
                     .Null => break,
                     .Pointer => {
@@ -81,7 +82,7 @@ pub const Name = union(enum) {
             }
 
             return if (has_pointer) .{ .raw = .{
-                .components = try components.toOwnedSlice(),
+                .components = try components.toOwnedSlice(allocator),
                 .packet_index = current_byte_index,
             } } else .{
                 .full = try FullName.fromAssumedComponents(
@@ -98,7 +99,7 @@ pub const Name = union(enum) {
                 if (name_index > options.max_label_size)
                     return error.Overflow;
 
-                const maybe_component = try Self.readLabelComponent(reader, null);
+                const maybe_component = try Self.readLabelComponent(&mutable_reader, null);
                 if (maybe_component) |component| switch (component) {
                     .Null, .Pointer => break,
                     else => {},
@@ -117,6 +118,7 @@ pub const Name = union(enum) {
         reader: anytype,
         maybe_allocator: ?std.mem.Allocator,
     ) !?LabelComponent {
+        var mutable_reader = @constCast(reader);
         // pointers, in the binary representation of a byte, are as follows
         //  1 1 B B B B B B | B B B B B B B B
         // they are two bytes length, but to identify one, you check if the
@@ -135,9 +137,9 @@ pub const Name = union(enum) {
         // if the length is 0, its a null octet
         logger.debug(
             "reading label component at {d} bytes",
-            .{reader.context.ctx.current_byte_count},
+            .{mutable_reader.context.ctx.current_byte_count},
         );
-        const possible_length = try reader.readInt(u8, .big);
+        const possible_length = try mutable_reader.readInt(u8, .big);
         if (possible_length == 0) return LabelComponent{ .Null = {} };
 
         // RFC1035:
@@ -148,7 +150,7 @@ pub const Name = union(enum) {
         const bit2 = (possible_length & (1 << 6)) != 0;
 
         if (bit1 and bit2) {
-            const second_offset_component = try reader.readInt(u8, .big);
+            const second_offset_component = try mutable_reader.readInt(u8, .big);
 
             // merge them together
             var offset: u16 = (possible_length << 7) | second_offset_component;
@@ -166,7 +168,7 @@ pub const Name = union(enum) {
             // the next <possible_length> bytes contain a full label.
             if (maybe_allocator) |allocator| {
                 const label = try allocator.alloc(u8, possible_length);
-                const read_bytes = try reader.read(label);
+                const read_bytes = try mutable_reader.read(label);
                 if (read_bytes != label.len) logger.err(
                     "possible_length = {d} read_bytes = {d} label.len = {d}",
                     .{ possible_length, read_bytes, label.len },
@@ -175,7 +177,7 @@ pub const Name = union(enum) {
                 return LabelComponent{ .Full = label };
             } else {
                 logger.debug("read_name: skip {d} bytes as no alloc", .{possible_length});
-                try reader.skipBytes(possible_length, .{});
+                try mutable_reader.skipBytes(possible_length, .{});
                 return null;
             }
         }
@@ -251,17 +253,17 @@ pub const FullName = struct {
         components: []LabelComponent,
         packet_index: ?usize,
     ) !Self {
-        var labels = std.ArrayList([]const u8).init(allocator);
-        defer labels.deinit();
+        var labels = std.ArrayList([]const u8).empty;
+        defer labels.deinit(allocator);
 
         for (components) |component| switch (component) {
-            .Full => |data| try labels.append(data),
+            .Full => |data| try labels.append(allocator, data),
             .Pointer => unreachable,
             .Null => break,
         };
 
         return Self{
-            .labels = try labels.toOwnedSlice(),
+            .labels = try labels.toOwnedSlice(allocator),
             .packet_index = packet_index,
         };
     }
@@ -376,15 +378,15 @@ pub const NamePool = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .held_names = NameList.init(allocator),
+            .held_names = NameList.empty,
         };
     }
 
-    pub fn deinit(self: Self) void {
-        self.held_names.deinit();
+    pub fn deinit(self: *Self) void {
+        self.held_names.deinit(self.allocator);
     }
 
-    pub fn deinitWithNames(self: Self) void {
+    pub fn deinitWithNames(self: *Self) void {
         for (self.held_names.items) |name| name.deinit(self.allocator);
         self.deinit();
     }
@@ -396,17 +398,17 @@ pub const NamePool = struct {
     pub fn transmuteName(self: *Self, name: dns.Name) !dns.Name {
         return switch (name) {
             .full => blk: {
-                try self.held_names.append(name);
+                try self.held_names.append(self.allocator, name);
                 break :blk name;
             },
             .raw => |raw| blk: {
                 defer name.deinit(self.allocator);
                 // this ends in a Pointer, create a new FullName
-                var resolved_labels = std.ArrayList([]const u8).init(self.allocator);
-                defer resolved_labels.deinit();
+                var resolved_labels = std.ArrayList([]const u8).empty;
+                defer resolved_labels.deinit(self.allocator);
 
                 for (raw.components) |raw_component| switch (raw_component) {
-                    .Full => |text| try resolved_labels.append(try self.allocator.dupe(u8, text)),
+                    .Full => |text| try resolved_labels.append(self.allocator, try self.allocator.dupe(u8, text)),
                     .Pointer => |packet_offset| {
 
                         // step 1: find out the name we already have
@@ -452,7 +454,7 @@ pub const NamePool = struct {
                             const referenced_labels = referenced_name.labels[label_index.?..];
 
                             for (referenced_labels) |referenced_label| {
-                                try resolved_labels.append(try self.allocator.dupe(u8, referenced_label));
+                                try resolved_labels.append(self.allocator, try self.allocator.dupe(u8, referenced_label));
                             }
                         } else {
                             logger.warn(
@@ -462,7 +464,7 @@ pub const NamePool = struct {
 
                             for (self.held_names.items) |held_name| {
                                 logger.warn(
-                                    "known name: {} at offset {?d}",
+                                    "known name: {any} at offset {?d}",
                                     .{ held_name, held_name.full.packet_index },
                                 );
                             }
@@ -474,10 +476,10 @@ pub const NamePool = struct {
                 };
 
                 const full_name = dns.Name{ .full = dns.FullName{
-                    .labels = try resolved_labels.toOwnedSlice(),
+                    .labels = try resolved_labels.toOwnedSlice(self.allocator),
                     .packet_index = name.raw.packet_index,
                 } };
-                try self.held_names.append(full_name);
+                try self.held_names.append(self.allocator, full_name);
                 break :blk full_name;
             },
         };

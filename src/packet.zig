@@ -105,58 +105,53 @@ pub const Header = packed struct {
 
     /// Read a header from its network representation in a stream.
     pub fn readFrom(byte_reader: anytype) !Self {
+        var reader_mut = byte_reader;
         var self = Self{};
 
-        // turn incoming reader into a bitReader so that we can extract
-        // non-u8-aligned data from it
-        var reader = std.io.bitReader(.big, byte_reader);
+        self.id = try reader_mut.readInt(u16, .big);
 
-        const fields = @typeInfo(Self).@"struct".fields;
-        inline for (fields) |field| {
-            var out_bits: u16 = undefined;
-            @field(self, field.name) = switch (field.type) {
-                bool => (try reader.readBits(u1, 1, &out_bits)) > 0,
-                u3 => try reader.readBits(u3, 3, &out_bits),
-                u4 => try reader.readBits(u4, 4, &out_bits),
-                OpCode, ResponseCode => blk: {
-                    const tag_int = try reader.readBits(u4, 4, &out_bits);
-                    break :blk try std.meta.intToEnum(field.type, tag_int);
-                },
-                u16 => try byte_reader.readInt(field.type, .big),
-                else => @compileError(
-                    "unsupported type on header " ++ @typeName(field.type),
-                ),
-            };
-        }
+        const flags: u16 = try reader_mut.readInt(u16, .big);
+        self.is_response = (flags & 0x8000) != 0;
+        const opcode_bits: u4 = @as(u4, @intCast((flags >> 11) & 0x0F));
+        self.opcode = try std.meta.intToEnum(OpCode, opcode_bits);
+        self.aa_flag = (flags & 0x0400) != 0;
+        self.truncated = (flags & 0x0200) != 0;
+        self.wanted_recursion = (flags & 0x0100) != 0;
+        self.recursion_available = (flags & 0x0080) != 0;
+        self.z = @as(u3, @intCast((flags >> 4) & 0x07));
+        const rcode_bits: u4 = @as(u4, @intCast(flags & 0x0F));
+        self.response_code = try std.meta.intToEnum(ResponseCode, rcode_bits);
+
+        self.question_length = try reader_mut.readInt(u16, .big);
+        self.answer_length = try reader_mut.readInt(u16, .big);
+        self.nameserver_length = try reader_mut.readInt(u16, .big);
+        self.additional_length = try reader_mut.readInt(u16, .big);
+
         return self;
     }
 
     /// Write the network representation of a header to the given writer.
     pub fn writeTo(self: Self, byte_writer: anytype) !usize {
-        var writer = std.io.bitWriter(.big, byte_writer);
+        var writer_mut = byte_writer;
+        try writer_mut.writeInt(u16, self.id, .big);
 
-        var written_bits: usize = 0;
+        var flags: u16 = 0;
+        flags |= @as(u16, @intFromBool(self.is_response)) << 15;
+        flags |= @as(u16, @intFromEnum(self.opcode)) << 11;
+        flags |= @as(u16, @intFromBool(self.aa_flag)) << 10;
+        flags |= @as(u16, @intFromBool(self.truncated)) << 9;
+        flags |= @as(u16, @intFromBool(self.wanted_recursion)) << 8;
+        flags |= @as(u16, @intFromBool(self.recursion_available)) << 7;
+        flags |= (@as(u16, self.z) & 0x07) << 4;
+        flags |= @as(u16, @intFromEnum(self.response_code)) & 0x0F;
 
-        const fields = @typeInfo(Self).@"struct".fields;
-        inline for (fields) |field| {
-            const value = @field(self, field.name);
-            written_bits += @bitSizeOf(field.type);
-            switch (field.type) {
-                bool => try writer.writeBits(@as(u1, if (value) 1 else 0), 1),
-                u3 => try writer.writeBits(value, 3),
-                u4 => try writer.writeBits(value, 4),
-                OpCode, ResponseCode => try writer.writeBits(@intFromEnum(value), 4),
-                u16 => try writer.writeBits(value, 16),
-                else => @compileError(
-                    "unsupported type on header " ++ @typeName(field.type),
-                ),
-            }
-        }
+        try writer_mut.writeInt(u16, flags, .big);
+        try writer_mut.writeInt(u16, self.question_length, .big);
+        try writer_mut.writeInt(u16, self.answer_length, .big);
+        try writer_mut.writeInt(u16, self.nameserver_length, .big);
+        try writer_mut.writeInt(u16, self.additional_length, .big);
 
-        try writer.flushBits();
-        const written_bytes = written_bits / 8;
-        std.debug.assert(written_bytes == 12);
-        return written_bytes;
+        return 12;
     }
 };
 
@@ -172,14 +167,15 @@ pub const Question = struct {
 
     pub fn readFrom(reader: anytype, options: dns.ParserOptions) !Self {
         // TODO assert reader is WrapperReader
+        var mutable_reader = reader;
         logger.debug(
             "reading question at {d} bytes",
-            .{reader.context.ctx.current_byte_count},
+            .{mutable_reader.context.ctx.current_byte_count},
         );
 
-        const name = try Name.readFrom(reader, options);
-        const qtype = try reader.readEnum(ResourceType, .big);
-        const qclass = try ResourceClass.readFrom(reader);
+        const name = try Name.readFrom(mutable_reader, options);
+        const qtype = try mutable_reader.readEnum(ResourceType, .big);
+        const qclass = try ResourceClass.readFrom(mutable_reader);
 
         return Self{
             .name = name,
@@ -215,12 +211,13 @@ pub const Resource = struct {
         reader: anytype,
         options: dns.ParserOptions,
     ) !?dns.ResourceData.Opaque {
+        var mutable_reader = reader;
         if (options.allocator) |allocator| {
-            const rdata_length = try reader.readInt(u16, .big);
-            const rdata_index = reader.context.ctx.current_byte_count;
+            const rdata_length = try mutable_reader.readInt(u16, .big);
+            const rdata_index = mutable_reader.context.ctx.current_byte_count;
 
             const opaque_rdata = try allocator.alloc(u8, rdata_length);
-            const read_bytes = try reader.read(opaque_rdata);
+            const read_bytes = try mutable_reader.read(opaque_rdata);
             std.debug.assert(read_bytes == opaque_rdata.len);
             return .{
                 .data = opaque_rdata,
@@ -233,15 +230,16 @@ pub const Resource = struct {
 
     pub fn readFrom(reader: anytype, options: dns.ParserOptions) !Self {
         // TODO assert reader is WrapperReader
+        var mutable_reader = reader;
         logger.debug(
             "reading resource at {d} bytes",
-            .{reader.context.ctx.current_byte_count},
+            .{mutable_reader.context.ctx.current_byte_count},
         );
-        const name = try Name.readFrom(reader, options);
-        const typ = try ResourceType.readFrom(reader);
-        const class = try ResourceClass.readFrom(reader);
-        const ttl = try reader.readInt(i32, .big);
-        const opaque_rdata = try Self.readResourceDataFrom(reader, options);
+        const name = try Name.readFrom(mutable_reader, options);
+        const typ = try ResourceType.readFrom(mutable_reader);
+        const class = try ResourceClass.readFrom(mutable_reader);
+        const ttl = try mutable_reader.readInt(i32, .big);
+        const opaque_rdata = try Self.readResourceDataFrom(mutable_reader, options);
 
         return Self{
             .name = name,

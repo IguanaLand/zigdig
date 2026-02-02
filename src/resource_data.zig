@@ -120,11 +120,11 @@ pub const ResourceData = union(Type) {
         _ = options;
 
         switch (self) {
-            .A, .AAAA => |addr| return fmt.format(writer, "{}", .{addr}),
+            .A, .AAAA => |addr| return fmt.format(writer, "{any}", .{addr}),
 
-            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| return fmt.format(writer, "{?}", .{name}),
+            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| return fmt.format(writer, "{any}", .{name}),
 
-            .SOA => |soa| return fmt.format(writer, "{?} {?} {} {} {} {} {}", .{
+            .SOA => |soa| return fmt.format(writer, "{?} {?} {any} {any} {any} {any} {any}", .{
                 soa.mname,
                 soa.rname,
                 soa.serial,
@@ -134,8 +134,8 @@ pub const ResourceData = union(Type) {
                 soa.minimum,
             }),
 
-            .MX => |mx| return fmt.format(writer, "{} {?}", .{ mx.preference, mx.exchange }),
-            .SRV => |srv| return fmt.format(writer, "{} {} {} {?}", .{
+            .MX => |mx| return fmt.format(writer, "{any} {?}", .{ mx.preference, mx.exchange }),
+            .SRV => |srv| return fmt.format(writer, "{any} {any} {any} {?}", .{
                 srv.priority,
                 srv.weight,
                 srv.port,
@@ -328,7 +328,7 @@ pub const ResourceData = union(Type) {
             },
 
             else => {
-                logger.warn("unexpected rdata: {}\n", .{resource_type});
+                logger.warn("unexpected rdata: {any}\n", .{resource_type});
                 return error.UnknownResourceType;
             },
         };
