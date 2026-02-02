@@ -500,12 +500,20 @@ fn lookupHosts(addrs: *std.ArrayList(std.net.Address), allocator: std.mem.Alloca
     var reader_state = file.reader(file_reader_buffer[0..]);
     const reader = &reader_state.interface;
     var line_buf: [512]u8 = undefined;
-    while (reader.*.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
+    while (reader.takeDelimiter('\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
-            // Skip to the delimiter in the reader, to fix parsing
-            try reader.*.skipUntilDelimiterOrEof('\n');
+            // Skip to the delimiter in the reader, to fix parsing.
+            var line_writer = std.io.Writer.fixed(line_buf[0..]);
+            _ = reader.streamDelimiterLimit(&line_writer, '\n', .limited(line_buf.len)) catch |err2| switch (err2) {
+                error.StreamTooLong => {},
+                else => |e| return e,
+            };
+            _ = reader.discardDelimiterInclusive('\n') catch |e| switch (e) {
+                error.EndOfStream => {},
+                else => return e,
+            };
             // Use the truncated line. A truncated comment or hostname will be handled correctly.
-            break :blk &line_buf;
+            break :blk line_buf[0..line_writer.end];
         },
         else => |e| return e,
     }) |line| {
