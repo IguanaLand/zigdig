@@ -205,17 +205,12 @@ pub const Name = union(enum) {
         return .{ .full = try FullName.fromString(domain, buffer) };
     }
 
-    pub fn format(
-        self: Self,
-        comptime f: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         return switch (self) {
-            .full => |full| full.format(f, options, writer),
+            .full => |full| full.format(writer),
             .raw => |raw| for (raw.components) |component| switch (component) {
-                .Pointer => |ptr| try std.fmt.format(writer, "(pointer={d}).", .{ptr}),
-                .Full => |label| try std.fmt.format(writer, "{s}.", .{label}),
+                .Pointer => |ptr| try writer.print("(pointer={d}).", .{ptr}),
+                .Full => |label| try writer.print("{s}.", .{label}),
                 .Null => break,
             },
         };
@@ -347,17 +342,9 @@ pub const FullName = struct {
     }
 
     /// Format the given DNS name.
-    pub fn format(
-        self: Self,
-        comptime f: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = f;
-        _ = options;
-
+    pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         for (self.labels) |label| {
-            try std.fmt.format(writer, "{s}.", .{label});
+            try writer.print("{s}.", .{label});
         }
     }
 };

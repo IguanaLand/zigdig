@@ -1,6 +1,4 @@
 const std = @import("std");
-const fmt = std.fmt;
-
 const dns = @import("lib.zig");
 const pkt = @import("packet.zig");
 const Type = dns.ResourceType;
@@ -88,6 +86,28 @@ pub const ResourceData = union(Type) {
 
     const Self = @This();
 
+    fn formatAddressNoPort(addr: std.net.Address, writer: anytype) !void {
+        var buffer: [128]u8 = undefined;
+        var addr_writer = std.Io.Writer.fixed(&buffer);
+        try addr.format(&addr_writer);
+        const full = addr_writer.buffered();
+        if (full.len == 0) return;
+
+        if (full[0] == '[') {
+            if (std.mem.indexOfScalar(u8, full, ']')) |idx| {
+                try writer.writeAll(full[1..idx]);
+                return;
+            }
+        }
+
+        if (std.mem.lastIndexOfScalar(u8, full, ':')) |idx| {
+            try writer.writeAll(full[0..idx]);
+            return;
+        }
+
+        try writer.writeAll(full);
+    }
+
     pub fn networkSize(self: Self) usize {
         return switch (self) {
             .A => 4,
@@ -110,21 +130,13 @@ pub const ResourceData = union(Type) {
     ///
     /// For example, a resource data of type A would be
     /// formatted to its representing IPv4 address.
-    pub fn format(
-        self: Self,
-        comptime f: []const u8,
-        options: fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = f;
-        _ = options;
-
+    pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
-            .A, .AAAA => |addr| return fmt.format(writer, "{any}", .{addr}),
+            .A, .AAAA => |addr| return formatAddressNoPort(addr, writer),
 
-            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| return fmt.format(writer, "{any}", .{name}),
+            .NS, .MD, .MF, .MB, .MG, .MR, .CNAME, .PTR => |name| return writer.print("{?f}", .{name}),
 
-            .SOA => |soa| return fmt.format(writer, "{?} {?} {any} {any} {any} {any} {any}", .{
+            .SOA => |soa| return writer.print("{?f} {?f} {d} {d} {d} {d} {d}", .{
                 soa.mname,
                 soa.rname,
                 soa.serial,
@@ -134,16 +146,16 @@ pub const ResourceData = union(Type) {
                 soa.minimum,
             }),
 
-            .MX => |mx| return fmt.format(writer, "{any} {?}", .{ mx.preference, mx.exchange }),
-            .SRV => |srv| return fmt.format(writer, "{any} {any} {any} {?}", .{
+            .MX => |mx| return writer.print("{d} {?f}", .{ mx.preference, mx.exchange }),
+            .SRV => |srv| return writer.print("{d} {d} {d} {?f}", .{
                 srv.priority,
                 srv.weight,
                 srv.port,
                 srv.target,
             }),
 
-            .TXT => |text| return fmt.format(writer, "{?s}", .{text}),
-            else => return fmt.format(writer, "TODO support {s}", .{@tagName(self)}),
+            .TXT => |text| return writer.print("{?s}", .{text}),
+            else => return writer.print("TODO support {s}", .{@tagName(self)}),
         }
     }
 

@@ -22,6 +22,12 @@ fn logfn(
     }
 }
 
+fn formatAddress(address: std.net.Address, buffer: []u8) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try address.format(&writer);
+    return writer.buffered();
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -94,9 +100,12 @@ pub fn main() !void {
     const conn = if (builtin.os.tag == .windows) try dns.helpers.connectToResolver("8.8.8.8", null) else try dns.helpers.connectToSystemResolver();
     defer conn.close();
 
-    logger.info("selected nameserver: {any}\n", .{conn.address});
+    var addr_buffer: [128]u8 = undefined;
+    const addr_str = try formatAddress(conn.address, &addr_buffer);
+    logger.info("selected nameserver: {s}\n", .{addr_str});
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_file_writer = std.fs.File.stdout().writer(stdout_buffer[0..]);
+    defer stdout_file_writer.interface.flush() catch {};
     const stdout = &stdout_file_writer.interface;
 
     // print out our same question as a zone file for debugging purposes

@@ -27,8 +27,8 @@ fn printList(
             else => {}, // names are owned by given NamePool
         };
 
-        try writer.print("{any}\t\t{s}\t{s}\t{d}\t{any}\n", .{
-            resource.name.?,
+        try writer.print("{?f}\t\t{s}\t{s}\t{d}\t{f}\n", .{
+            resource.name,
             @tagName(resource.typ),
             @tagName(resource.class),
             resource.ttl,
@@ -69,7 +69,7 @@ pub fn printAsZoneFile(
         try writer.print(";;name\ttype\tclass\n", .{});
 
         for (packet.questions) |question| {
-            try writer.print(";{any}\t{s}\t{s}\n", .{
+            try writer.print(";{?f}\t{s}\t{s}\n", .{
                 question.name,
                 @tagName(question.typ),
                 @tagName(question.class),
